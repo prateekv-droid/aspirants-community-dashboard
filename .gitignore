@@ -1,0 +1,13 @@
+node_modules
+dist
+.DS_Store
+*.log
+
+# local tooling
+.claude/
+
+# WhatsApp exports hold members' phone numbers and messages. They stay on the
+# machine that imports them — the app and the test suite both run without them.
+public/samples/*.zip
+**/_chat.txt
+**/WhatsApp Chat*

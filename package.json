@@ -1,0 +1,21 @@
+{
+  "name": "aspirants-community-dashboard",
+  "version": "1.0.0",
+  "description": "amber Studio \u2014 WhatsApp aspirant community analytics: member growth, UTM attribution, conversation intelligence",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node scripts/test-parsers.mjs"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^6.0.7"
+  }
+}
