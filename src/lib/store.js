@@ -85,14 +85,102 @@ export const emptyState = () => ({
 export const slug = (s) =>
   String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'community'
 
+/**
+ * The community with this name, created if absent. Matches on the *current*
+ * name, not the id: ids are frozen at creation, so after a rename the old
+ * name's slug still equals the id and would otherwise be matched.
+ */
 export function ensureCommunity(state, name) {
-  const id = slug(name)
-  let c = state.communities.find((x) => x.id === id)
+  let c = state.communities.find((x) => nameKey(x.name) === nameKey(name))
   if (!c) {
-    c = { id, name, createdAt: new Date().toISOString(), groups: [], gaSnapshots: [], shortioSnapshots: [], leads: null }
+    c = { id: freshId(state, name), name, createdAt: new Date().toISOString(), groups: [], gaSnapshots: [], shortioSnapshots: [], leads: null }
     state.communities.push(c)
   }
   return c
+}
+
+/* ── managing communities ────────────────────────────────────────────────
+   A community's id is fixed when it is created and never changes; its name is
+   free to edit. Everything that points at a community — the upload dropdown,
+   the open tab, the import history — goes by id, so renaming "Community #2"
+   to "UK cohort" cannot split it into two. Names are unique ignoring case and
+   punctuation, the same rule ensureCommunity() matches on.               */
+
+const nameKey = (name) => slug(String(name || '').trim())
+
+export function validateCommunityName(state, name, exceptId = null) {
+  const n = String(name || '').trim()
+  if (!n) return 'Give the community a name.'
+  if (n.length > 60) return 'Keep the name under 60 characters.'
+  const clash = state.communities.find((c) => c.id !== exceptId && nameKey(c.name) === nameKey(n))
+  if (clash) return `“${clash.name}” already exists.`
+  return null
+}
+
+/** A fresh id: the name's slug, suffixed if a (possibly renamed) community holds it. */
+function freshId(state, name) {
+  const base = slug(name)
+  let id = base, n = 2
+  while (state.communities.some((c) => c.id === id)) id = `${base}-${n++}`
+  return id
+}
+
+export function createCommunity(state, name) {
+  const error = validateCommunityName(state, name)
+  if (error) return { error }
+  const c = {
+    id: freshId(state, name), name: String(name).trim(), createdAt: new Date().toISOString(),
+    groups: [], gaSnapshots: [], shortioSnapshots: [], leads: null,
+  }
+  state.communities.push(c)
+  return { community: c }
+}
+
+export function renameCommunity(state, id, name) {
+  const c = state.communities.find((x) => x.id === id)
+  if (!c) return { error: 'That community no longer exists.' }
+  const error = validateCommunityName(state, name, id)
+  if (error) return { error }
+  const before = c.name
+  c.name = String(name).trim()
+  // history and the stale-parser banner record names, so carry them over
+  for (const im of state.imports || []) if (im.communityId === id) im.communityName = c.name
+  if (state.staleWhatsApp) state.staleWhatsApp = state.staleWhatsApp.map((n) => (n === before ? c.name : n))
+  return { community: c }
+}
+
+/** Removes a community and everything imported into it. History is kept. */
+export function deleteCommunity(state, id) {
+  const c = state.communities.find((x) => x.id === id)
+  if (!c) return { error: 'That community no longer exists.' }
+  state.communities = state.communities.filter((x) => x.id !== id)
+  if (state.staleWhatsApp) state.staleWhatsApp = state.staleWhatsApp.filter((n) => n !== c.name)
+  return { removed: c }
+}
+
+/** What would go if this community were deleted — for the confirmation. */
+export function communityContents(c) {
+  const events = (c.groups || []).reduce((n, g) => n + (g.events?.length || 0), 0)
+  return {
+    groups: c.groups?.length || 0,
+    events,
+    ga: c.gaSnapshots?.length || 0,
+    shortio: c.shortioSnapshots?.length || 0,
+    leads: c.leads?.leads?.length || 0,
+    empty: !events && !c.gaSnapshots?.length && !c.shortioSnapshots?.length && !c.leads?.leads?.length,
+  }
+}
+
+/**
+ * Where an import lands: the chosen community by id when there is one,
+ * otherwise by name — the path the bundled samples take on first run.
+ */
+export function resolveCommunity(state, { communityId, name }) {
+  if (communityId) {
+    const c = state.communities.find((x) => x.id === communityId)
+    if (c) return c
+  }
+  return ensureCommunity(state, name || state.communities[0]?.name || 'Community #1')
 }
 
 /* ── merging repeat imports ────────────────────────────────────────────── */

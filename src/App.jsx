@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  loadState, saveState, clearState, emptyState, ensureCommunity,
+  loadState, saveState, clearState, emptyState, resolveCommunity,
+  createCommunity, renameCommunity, deleteCommunity,
   mergeWhatsApp, addSnapshot, mergeGA, mergeShortIo, communityExtent,
   aggregateCommunities, planMigration, PARSER_VERSION,
 } from './lib/store.js'
 import { enrichEvents, eventsFor } from './lib/metrics.js'
-import { resolveRange, previousRange } from './lib/dates.js'
+import { resolveRange, previousRange, fmtLong } from './lib/dates.js'
 import { detectAndParse, SOURCES } from './lib/detect.js'
-import { runSync, isStale } from './lib/sync.js'
 import { Toasts, Empty } from './components/ui.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import DateRangePicker from './components/DateRangePicker.jsx'
@@ -17,8 +17,8 @@ import MemberGrowth from './views/MemberGrowth.jsx'
 import Conversations from './views/Conversations.jsx'
 import Groups from './views/Groups.jsx'
 
-/* Sections live *inside* a community. Uploading, the leads sync and the
-   import history all live in the Add data dialog rather than in a tab. */
+/* Sections live *inside* a community. Uploading, managing communities and
+   the import history all live in the Add data dialog rather than in a tab. */
 const SECTIONS = [
   { key: 'overview', label: 'Overview' },
   { key: 'members', label: 'Member growth' },
@@ -44,7 +44,6 @@ export default function App() {
   const [section, setSection] = useState('overview')
   const [uploadTab, setUploadTab] = useState(null) // null = closed
   const [toasts, setToasts] = useState([])
-  const [syncBusy, setSyncBusy] = useState(false)
   const [groupFilter, setGroupFilter] = useState([])
   const [range, setRange] = useState({ preset: '28d', range: { from: '2026-01-01', to: '2026-12-31' }, compare: true })
   const rangeInit = useRef(false)
@@ -178,61 +177,34 @@ export default function App() {
     rangeInit.current = false
   }
 
-  /* ── leads sync ─────────────────────────────────────────────────────── */
-  const autoRan = useRef(false)
-  const inFlight = useRef(false)
-
-  const doSync = useCallback(async (cfg) => {
-    const conf = cfg || state?.sync
-    if (!conf?.url || inFlight.current) return
-    // claim the once-per-session auto-run too, so "Save & sync now" does not
-    // also trip the stale-check effect below
-    autoRan.current = true
-    inFlight.current = true
-    setSyncBusy(true)
-    try {
-      const result = await runSync(conf)
-      setState((prev) => {
-        const next = structuredClone(prev)
-        const c = ensureCommunity(next, conf.communityName || next.communities[0]?.name || 'Community #1')
-        c.leads = {
-          leads: result.leads, mapping: result.mapping, header: result.header,
-          sheet: result.sheet, updatedAt: result.fetchedAt, rowCount: result.rowCount,
-          origin: 'sync', url: conf.url,
-        }
-        next.sync = {
-          ...conf,
-          lastRun: result.fetchedAt,
-          lastStatus: `${result.leads.length.toLocaleString()} leads read${result.skipped ? `, ${result.skipped} skipped` : ''}`,
-          lastError: null,
-          mapping: result.mapping,
-        }
-        next.imports.push({
-          id: `${Date.now()}`, at: result.fetchedAt, fileName: conf.url, source: 'leads',
-          communityName: c.name, summary: `synced ${result.leads.length.toLocaleString()} leads`,
-        })
-        return next
-      })
-      toast(`Leads synced — ${result.leads.length.toLocaleString()} records.`, 'good')
-    } catch (e) {
-      setState((prev) => ({ ...prev, sync: { ...(prev.sync || {}), ...conf, lastRun: new Date().toISOString(), lastError: e.message } }))
-      toast(e.message, 'bad', true)
-    } finally {
-      inFlight.current = false
-      setSyncBusy(false)
+  /* ── communities: create, rename, delete ─────────────────────────────
+     A shallow copy is enough — these touch names, the community list and
+     the history records, never the event arrays, which stay shared. The
+     result comes back synchronously so the dialog can show a refusal. */
+  const editCommunities = (fn) => {
+    const next = {
+      ...state,
+      communities: state.communities.map((c) => ({ ...c })),
+      imports: state.imports.map((i) => ({ ...i })),
+      staleWhatsApp: state.staleWhatsApp ? [...state.staleWhatsApp] : state.staleWhatsApp,
     }
-  }, [state?.sync, toast])
-
-  /* auto-run a stale sync once per session */
-  useEffect(() => {
-    if (!state?.sync?.url || autoRan.current) return
-    if (!isStale(state.sync)) return
-    doSync(state.sync)
-  }, [state?.sync, doSync])
-
-  const onSaveSync = (cfg) => {
-    setState((prev) => ({ ...prev, sync: { ...(prev.sync || {}), ...cfg } }))
-    toast('Sync settings saved.', 'good')
+    const result = fn(next)
+    if (!result.error) setState(next)
+    return result
+  }
+  const onCreateCommunity = (name) => {
+    const r = editCommunities((next) => createCommunity(next, name))
+    if (!r.error) toast(`Created “${r.community.name}”.`, 'good')
+    return r
+  }
+  const onRenameCommunity = (id, name) => editCommunities((next) => renameCommunity(next, id, name))
+  const onDeleteCommunity = (id) => {
+    const r = editCommunities((next) => deleteCommunity(next, id))
+    if (!r.error) {
+      if (scope === id) setScope(ALL)
+      toast(`Deleted “${r.removed.name}”.`, 'good')
+    }
+    return r
   }
 
   /* ── render ─────────────────────────────────────────────────────────── */
@@ -258,13 +230,7 @@ export default function App() {
     <div className="shell">
       <div className="chrome">
       <header className="masthead">
-        <div className="logo">
-          <span className="mark" aria-hidden>a</span>
-          <span>
-            amber<b style={{ fontWeight: 800 }}>Studio</b>
-            <small>Aspirants community</small>
-          </span>
-        </div>
+        <h1 className="logo">Aspirants Community Dashboard</h1>
 
         {community && (
           <div className="ctabs" role="tablist" aria-label="Community">
@@ -348,9 +314,12 @@ export default function App() {
 
       {uploadTab && (
         <UploadModal state={state} initialTab={uploadTab} onClose={() => setUploadTab(null)}
-                     currentCommunity={scope === ALL ? null : community?.name}
+                     currentCommunityId={scope === ALL ? null : scope}
                      onReset={async () => { await clearState(); location.reload() }}
-                     onImport={onImport} onSaveSync={onSaveSync} onRunSync={doSync} syncBusy={syncBusy} />
+                     onImport={onImport}
+                     onCreateCommunity={onCreateCommunity}
+                     onRenameCommunity={onRenameCommunity}
+                     onDeleteCommunity={onDeleteCommunity} />
       )}
       <Toasts items={toasts} onDismiss={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
     </div>
@@ -359,9 +328,8 @@ export default function App() {
 
 /* ── apply one detected file to the state, returning a human summary ──── */
 function applyImport(state, item) {
-  const name = item.community || item.payload?.communityName ||
-    state.communities[0]?.name || 'Community #1'
-  const c = ensureCommunity(state, name)
+  // an upload names its community by id; the first-run samples only by name
+  const c = resolveCommunity(state, { communityId: item.communityId, name: item.payload?.communityName })
   const at = new Date().toISOString()
   let summary = ''
 
@@ -379,7 +347,7 @@ function applyImport(state, item) {
       (wasStale ? ' — replaced data read by the earlier parser' : '')
   } else if (item.source === 'ga') {
     const how = addSnapshot(c.gaSnapshots, { ...item.payload, importedAt: at })
-    summary = `GA snapshot ${how} (${item.payload.range.from} → ${item.payload.range.to})`
+    summary = `GA snapshot ${how} (${fmtLong(item.payload.range.from)} → ${fmtLong(item.payload.range.to)})`
   } else if (item.source === 'shortio') {
     const how = addSnapshot(c.shortioSnapshots, { ...item.payload, importedAt: at })
     summary = `short.io snapshot ${how} (${item.payload.totals.clicks.toLocaleString()} clicks)`

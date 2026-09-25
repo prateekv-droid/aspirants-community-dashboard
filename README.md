@@ -34,7 +34,7 @@ group.
 **Member growth** runs: the metric tiles and their shared chart, then the **Sources** row,
 then the per-group table, then the balance / quality / notable-days cards.
 
-Uploads, the leads sync, the import history and **Clear all data** all live in the
+Uploads, community management, the import history and **Clear all data** all live in the
 **Add data** dialog rather than in tabs.
 
 ### Sources
@@ -112,74 +112,10 @@ misdetection is visible rather than silent. Re-importing is safe: WhatsApp event
 de-duplicate against what is already stored, and a GA or short.io snapshot covering the
 same window replaces its predecessor instead of double-counting.
 
-### Leads sync
-
-The leads sheet is the one feed that must stay current, so it is pulled rather than
-uploaded. Paste the sheet URL in **Add data → Leads sync**, pick a refresh interval, and
-the dashboard re-reads it — including once automatically per session when the last pull is
-stale. A Google Sheets URL of any shape is normalised to the `gviz` CSV endpoint, which is
-the one that returns CORS headers for a link-shared sheet; the dialog states that
-requirement up front instead of letting it surface as an opaque network error.
-
-Because the read happens from the browser, the sheet must be readable without a login
-(*Anyone with the link → Viewer*, or published to the web).
-
-To try the sync without touching a real sheet, `public/leads-sample.csv` ships as a fixture
-with deliberately awkward column names (`WhatsApp Number`, `Study Destination`,
-`Submission Date`, day-first dates). Point the sync at
-`http://localhost:5180/leads-sample.csv` and watch all fourteen columns map themselves,
-with the one unrecognised column kept on each record.
-
----
-
-## What it measures
-
-**Member growth** — joins, exits, join requests and running membership, reconstructed from
-the membership notices in each transcript. Membership carries a baseline into any window,
-so "total members" is correct for a 7-day view and not just for full history.
-
-**Conversations** — every message is scored for sentiment (a lexicon-and-rules model tuned
-for this corpus: emoji-heavy, code-mixed Hindi/English, and domain words whose polarity is
-not generic — *refused*, *unconditional*, *deposit*) and tagged against a curated
-study-abroad topic taxonomy. Topics rank on **reach** — how many distinct people raised
-them — so one prolific poster cannot invent a trend. Also: responsiveness (median time to
-a reply, share of questions answered), a weekday × hour activity grid, contributor
-rankings with a helper score, and a free-form keyword miner for the intents the taxonomy
-has no name for yet.
-
-In the **Topics** table, the **Country split** column shows where each topic's messages
-were posted, in the same form as the sentiment bar: one segment per country group, widths
-as shares of that topic's messages, colours fixed per group so the group filter never
-recolours them. The caption names the leading group.
-
----
-
-## Honesty rules baked into the UI
-
-Analytics tools earn trust by refusing to fake precision. This one:
-
-- **Suppresses a comparison it cannot make.** GA and short.io only know their own export
-  windows. When the previous period reaches back before a feed begins, the tile says
-  *"no data before 28 Jul 2026"* rather than printing ▲3350%.
-- **Labels scaled estimates.** GA and short.io ship breakdowns pre-aggregated over their
-  own window. A narrower date range cannot re-slice them, so they are scaled by the share
-  of daily volume inside the range and marked as estimates. Daily series stay exact.
-- **Shares a y-axis when series share a metric.** Five country groups' membership is drawn
-  on one scale. Different metrics on one chart keep independent scales — the Search
-  Console behaviour — and the legend says so.
-- **Reports an index as an index.** Sentiment lives on −1…+1, so its movement is shown in
-  points, never as a percentage change.
-- **Names metrics for what they are.** Summing GA's daily actives counts a returning user
-  twice, so that tile reads *"Daily active users"*, with GA's de-duplicated total shown
-  separately.
-- **Says when topic percentages cannot sum to 100%** — a message can touch several topics.
-
-## Privacy
-
 Everything stays in the browser, in IndexedDB under `amber-aspirants-dashboard`. The
 transcripts contain members' phone numbers, so nothing is uploaded anywhere and phone
-numbers and emails are masked in every table and chart. The only network request the tool
-makes is the leads sync you configure.
+numbers and emails are masked in every table and chart. The tool makes no network
+requests of its own.
 
 ---
 
@@ -203,7 +139,7 @@ src/
 │   ├── metrics.js         every aggregation, all taking (events, {from,to})
 │   ├── store.js           IndexedDB persistence, snapshot merging, re-import
 │   │                      de-duplication, all-communities folding
-│   ├── sync.js            leads sync: URL normalisation, fetch, scheduling
+│   ├── sync.js            leads sync engine (no longer wired to the UI)
 │   └── dates.js           ISO/UTC date helpers, presets, previous-period
 ├── components/            chart, tiles, table, bar list, range picker, upload dialog
 └── views/                 Overview, MemberGrowth, Conversations, Groups
@@ -243,15 +179,29 @@ the community's groups instead of merging: events read by different parser versi
 share fingerprints, so a merge would count the same join twice. Bump the version whenever a
 parser change would alter what an already-imported export produces.
 
-## Adding a community
+## Communities
 
-Drop a second community's export in and assign it a name in the upload dialog — a new tab
-appears next to the first. A WhatsApp zip named `WA community 2.zip` is read as
-`Community #2` automatically; anything else defaults to whichever community tab you were
-looking at. Groups are matched by name within a community, so uploading a fresh export of
-one country group updates just that group.
+Communities are created and edited in **Add data → Communities**: create one by name,
+rename it, or delete it. Deleting says exactly what goes (country groups, WhatsApp events,
+GA and short.io snapshots) and keeps the import history. Names are unique ignoring case and
+punctuation, so "community 2" is refused when "Community #2" exists.
+
+Every uploaded file then gets a **Community** dropdown on the right of its card, listing
+those communities plus **+ New community…**. Nothing is assigned by guesswork:
+
+1. a WhatsApp export whose file name names an existing community is pre-selected for it
+2. otherwise the community tab you had open
+3. otherwise the only community, if there is just one
+4. otherwise nothing — **Import** stays disabled until you choose
+
+A WhatsApp file named for a community that doesn't exist yet (`WA community 3.zip`) offers
+a one-click **+ Create "Community #3" from the file name**.
+
+The dropdown selects by **id**, which is fixed when a community is created; only the name
+is editable. Renaming "Community #2" to "UK cohort" therefore can't split it in two — later
+uploads chosen from the dropdown still land in it, and a new "Community #2" gets its own id.
 
 Feeds belong to a community, not to the tool: a GA snapshot imported into Community #1
-counts toward Community #1 and the all-communities fold, and Community #2's tab honestly
-reports it as not loaded. The same applies to the leads sync, which targets one named
-community and says so wherever it does not apply.
+counts toward Community #1 and the Overview roll-up, and Community #2's tab reports it as not
+loaded. Groups are matched by name within a community, so a fresh export of one country
+group updates just that group.

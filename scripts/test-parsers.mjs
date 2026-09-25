@@ -10,7 +10,8 @@ import { detectAndParse } from '../src/lib/detect.js'
 import { parseWhatsAppChat, extractLinks, shortLabel, countryFromLabel } from '../src/lib/parseWhatsApp.js'
 import { parseCSV } from '../src/lib/csv.js'
 import { inferMapping, buildLeads, toISODate } from '../src/lib/parseLeads.js'
-import { emptyState, ensureCommunity, mergeWhatsApp, addSnapshot, mergeGA, mergeShortIo, planMigration, PARSER_VERSION } from '../src/lib/store.js'
+import { emptyState, ensureCommunity, mergeWhatsApp, addSnapshot, mergeGA, mergeShortIo, planMigration, PARSER_VERSION,
+  createCommunity, renameCommunity, deleteCommunity, resolveCommunity, communityContents } from '../src/lib/store.js'
 import { enrichEvents, eventsFor, memberSeries, conversationSeries, contributors, topicsFor, responsiveness, attribution, comparability, acquisitionSources, groupActivity } from '../src/lib/metrics.js'
 import { scoreSentiment, isQuestion } from '../src/lib/nlp/sentiment.js'
 
@@ -123,6 +124,42 @@ ok('a sample topped up with an upload is not silently re-parsed', mixed.stale.in
 ok('current-version data needs no migration',
    planMigration({ ...v1([]), parserVersion: PARSER_VERSION }, samples).reparse.length === 0)
 ok('fresh state is stamped with the current parser version', emptyState().parserVersion === PARSER_VERSION)
+
+/* ── managing communities ─────────────────────────────────────────────── */
+section('Community management')
+{
+  const st = emptyState()
+  const a = createCommunity(st, 'Community #1').community
+  const b = createCommunity(st, 'Community #2').community
+  ok('create adds a community with a stable id', st.communities.length === 2 && b.id === 'community-2')
+  ok('names are unique ignoring case and punctuation',
+     !!createCommunity(st, 'community 2').error && !!createCommunity(st, '  COMMUNITY #1 ').error)
+  ok('an empty name is refused', !!createCommunity(st, '   ').error)
+
+  st.imports.push({ id: 'i1', communityId: b.id, communityName: 'Community #2', source: 'ga' })
+  const r = renameCommunity(st, b.id, 'UK cohort')
+  ok('rename keeps the id — nothing pointing at it breaks', !r.error && b.id === 'community-2' && b.name === 'UK cohort')
+  ok('rename carries over to import history', st.imports[0].communityName === 'UK cohort')
+  ok('rename refuses a name another community has', !!renameCommunity(st, b.id, 'community #1').error)
+  ok('renaming to its own name in different case is allowed', !renameCommunity(st, b.id, 'uk COHORT').error)
+
+  // the trap: a new "Community #2" after the rename must be a *different* community
+  const b2 = createCommunity(st, 'Community #2').community
+  ok('the freed-up name can be reused, under a fresh id', b2 && b2.id !== b.id, b2?.id)
+  ok('an upload chosen by id lands in the renamed community',
+     resolveCommunity(st, { communityId: b.id, name: 'Community #2' }) === b)
+  ok('a name-only import (first-run samples) matches the current name, not a stale id',
+     ensureCommunity(st, 'Community #2') === b2 && ensureCommunity(st, 'UK cohort') === b)
+
+  b.gaSnapshots.push({ range: { from: '2026-07-28', to: '2026-08-24' } })
+  const contents = communityContents(b)
+  ok('delete confirmation can say what goes', contents.ga === 1 && !contents.empty)
+  const d = deleteCommunity(st, b.id)
+  ok('delete removes the community and its data', !d.error && !st.communities.some((c) => c.id === b.id))
+  ok('delete keeps the import history', st.imports.length === 1)
+  ok('deleting an unknown id is refused, not thrown', !!deleteCommunity(st, 'nope').error)
+  void a
+}
 
 /* ── leads mapping ────────────────────────────────────────────────────── */
 section('Leads sheet mapping')
