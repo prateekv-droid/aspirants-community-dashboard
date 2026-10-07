@@ -41,6 +41,25 @@ export function eventsFor(community, groups) {
 
 /* ── member growth ─────────────────────────────────────────────────────── */
 
+/** The count an operator typed in for a community or group, if they typed one. */
+export const manualCount = (x) => (Number.isFinite(x?.manualMembers) ? x.manualMembers : null)
+
+/**
+ * The membership figure a whole scope reports. Manual counts replace the
+ * reconstructed ones: the per-community total when a community is in view,
+ * and the per-group counts once the group filter has narrowed it. Anything
+ * without a manual number falls back to what the notices rebuild.
+ */
+export function scopeMembers(community, range, groups) {
+  const pick = groups && groups.length ? new Set(groups) : null
+  if (pick) return membersOfGroups((community?.groups || []).filter((g) => pick.has(g.group)), range)
+  const list = community?.memberCommunities || (community ? [community] : [])
+  return list.reduce(
+    (s, c) => s + (manualCount(c) ?? memberSeries((c.groups || []).flatMap((g) => g.events), range).totals.members),
+    0
+  )
+}
+
 /**
  * Daily joins / leaves / requests plus a running total.
  * `baseline` is the membership carried in from before `from`, so the
@@ -83,6 +102,32 @@ export function memberSeries(events, { from, to }) {
   }
 }
 
+/** Membership across a set of groups, each group's manual count taking over. */
+const membersOfGroups = (groups, range) =>
+  (groups || []).reduce((s, g) => s + (manualCount(g) ?? memberSeries(g.events, range).totals.members), 0)
+
+/**
+ * The folded community's groups bucketed back into the communities they came
+ * from, narrowed to the group filter.
+ *
+ * The filter holds the *fold's* labels — qualified with the community wherever
+ * two communities share a group name — so a per-community view cannot narrow
+ * itself by matching against its own group list; it has to come back through
+ * the fold, which is the only place the two namings are tied together.
+ * Communities left with no selected group drop out entirely.
+ */
+function groupsByCommunity(community, groups) {
+  const list = community?.memberCommunities || []
+  const pick = groups && groups.length ? new Set(groups) : null
+  const own = new Map(list.map((c) => [c.id, []]))
+  for (const g of community?.groups || []) {
+    if (pick && !pick.has(g.group)) continue
+    const id = g.communityId || list[0]?.id
+    if (own.has(id)) own.get(id).push(g)
+  }
+  return list.map((c) => ({ community: c, groups: own.get(c.id) })).filter((x) => x.groups.length)
+}
+
 /** Per-group growth, for the breakdown table. */
 export function memberByGroup(community, { from, to, groups }) {
   const pick = groups && groups.length ? new Set(groups) : null
@@ -92,12 +137,13 @@ export function memberByGroup(community, { from, to, groups }) {
       const m = memberSeries(g.events, { from, to })
       const msgs = g.events.filter((e) => (e.type === 'message' || e.type === 'attachment') && inRange(e.date, from, to))
       const people = new Set(msgs.map((e) => e.author))
+      const members = manualCount(g) ?? m.totals.members
       return {
         label: g.group,
         short: shortLabel(g.rawGroup || g.group),
         community: g.communityName || null,
         country: g.country,
-        members: m.totals.members,
+        members,
         joined: m.totals.joined,
         left: m.totals.left,
         net: m.totals.net,
@@ -106,7 +152,7 @@ export function memberByGroup(community, { from, to, groups }) {
         contributors: people.size,
         churnRate: m.totals.churnRate,
         // share of members who said anything in the window
-        engagement: m.totals.members > 0 ? people.size / m.totals.members : 0,
+        engagement: members > 0 ? people.size / members : 0,
         sentiment: msgs.length ? +(msgs.reduce((s, e) => s + (e._sentiment || 0), 0) / msgs.length).toFixed(3) : 0,
       }
     })
@@ -117,18 +163,25 @@ export function memberByGroup(community, { from, to, groups }) {
  * The same breakdown as memberByGroup, one row per community. Only meaningful
  * in the all-communities scope, where it answers the question that scope
  * exists for: which community is actually growing.
+ *
+ * Takes the folded community rather than the bare list so the group filter can
+ * narrow it — see groupsByCommunity().
  */
-export function byCommunity(communities, { from, to }) {
-  return (communities || []).map((c) => {
-    const events = c.groups.flatMap((g) => g.events)
+export function byCommunity(community, { from, to, groups }) {
+  const filtered = !!(groups && groups.length)
+  return groupsByCommunity(community, groups).map(({ community: c, groups: own }) => {
+    const events = own.flatMap((g) => g.events)
     const m = memberSeries(events, { from, to })
     const msgs = events.filter((e) => (e.type === 'message' || e.type === 'attachment') && inRange(e.date, from, to))
     const people = new Set(msgs.map((e) => e.author))
+    // a community's own manual total describes the whole community, so once the
+    // filter narrows it, what is left is the selected groups' own counts
+    const members = filtered ? membersOfGroups(own, { from, to }) : (manualCount(c) ?? m.totals.members)
     return {
       id: c.id,
       label: c.name,
-      groups: c.groups.length,
-      members: m.totals.members,
+      groups: own.length,
+      members,
       joined: m.totals.joined,
       left: m.totals.left,
       net: m.totals.net,
@@ -136,7 +189,7 @@ export function byCommunity(communities, { from, to }) {
       churnRate: m.totals.churnRate,
       messages: msgs.length,
       contributors: people.size,
-      engagement: m.totals.members > 0 ? people.size / m.totals.members : 0,
+      engagement: members > 0 ? people.size / members : 0,
       sentiment: msgs.length ? +(msgs.reduce((s, e) => s + (e._sentiment || 0), 0) / msgs.length).toFixed(3) : 0,
       leads: c.leads?.leads?.length || 0,
       series: m.series,
@@ -191,10 +244,9 @@ export function leaveReasons(events, { from, to }) {
 }
 
 /** Daily message volume per community — one series each, shared x-axis. */
-export function dailyByCommunity(communities, { from, to }) {
-  return (communities || []).map((c) => {
-    const events = c.groups.flatMap((g) => g.events)
-    const conv = conversationSeries(events, { from, to })
+export function dailyByCommunity(community, { from, to, groups }) {
+  return groupsByCommunity(community, groups).map(({ community: c, groups: own }) => {
+    const conv = conversationSeries(own.flatMap((g) => g.events), { from, to })
     return {
       id: c.id,
       label: c.name,
@@ -210,9 +262,14 @@ export function dailyByCommunity(communities, { from, to }) {
  * per-group chart and theme cards (Overview). `label` is the flag + country;
  * in the all-communities fold it names the community too, since every
  * community has its own UK group.
+ *
+ * `groups` narrows it to the group filter. The Groups tab deliberately passes
+ * none: its table is the control that *sets* the filter and badges the chosen
+ * row, so it has to keep listing every group to stay usable.
  */
-export function groupActivity(community, { from, to }) {
-  return (community?.groups || []).map((g) => {
+export function groupActivity(community, { from, to, groups }) {
+  const pick = groups && groups.length ? new Set(groups) : null
+  return (community?.groups || []).filter((g) => !pick || pick.has(g.group)).map((g) => {
     const conv = conversationSeries(g.events, { from, to })
     const mem = memberSeries(g.events, { from, to })
     const base = shortLabel(g.rawGroup || g.group)
@@ -221,7 +278,7 @@ export function groupActivity(community, { from, to }) {
       label: g.communityName ? `${base} · ${g.communityName}` : base,
       full: g.rawGroup || g.group,
       community: g.communityName || null,
-      members: mem.totals.members,
+      members: manualCount(g) ?? mem.totals.members,
       joined: mem.totals.joined,
       left: mem.totals.left,
       net: mem.totals.net,
@@ -329,7 +386,21 @@ export function contributors(events, { from, to }) {
     .sort((a, b) => b.messages - a.messages)
 }
 
-/** Reply latency, measured on gap-delimited bursts of conversation. */
+/**
+ * Reply latency, measured on gap-delimited bursts of conversation.
+ *
+ * A WhatsApp export carries no reply threading, so "answered" is necessarily a
+ * heuristic: a question counts as answered when *anyone else* posts in that
+ * group within `idleMinutes` of it. The asker's own follow-ups do not count,
+ * and a question nobody follows inside the window counts against the rate.
+ *
+ * Every question is its own pending thread. An earlier version kept only one
+ * open per group, so a burst — one member asking three things in a row — was
+ * counted as a single question, and one reply to it read as 100% answered
+ * while two questions vanished from the denominator entirely. `questions` is
+ * therefore the same count conversationSeries() reports, which is what makes
+ * the rate safe to show beside it.
+ */
 export function responsiveness(events, { from, to }, idleMinutes = 45) {
   const msgs = events
     .filter((e) => (e.type === 'message' || e.type === 'attachment') && inRange(e.date, from, to))
@@ -340,26 +411,31 @@ export function responsiveness(events, { from, to }, idleMinutes = 45) {
     byGroup.get(m.group).push(m)
   }
   const gapMs = idleMinutes * 60000
-  let threads = 0, answered = 0, latencies = []
+  let questions = 0, answered = 0
+  const latencies = []
   for (const list of byGroup.values()) {
-    let openQuestion = null
-    for (let i = 0; i < list.length; i++) {
-      const m = list[i]
-      if (openQuestion && m.ts - openQuestion.ts > gapMs) openQuestion = null
-      if (openQuestion && m.author !== openQuestion.author) {
-        answered++
-        latencies.push((m.ts - openQuestion.ts) / 60000)
-        openQuestion = null
+    let open = []                       // questions still waiting, oldest first
+    for (const m of list) {
+      // anything nobody has followed inside the window has gone cold
+      while (open.length && m.ts - open[0].ts > gapMs) open.shift()
+      if (open.length) {
+        const waiting = []
+        for (const q of open) {
+          if (q.author === m.author) { waiting.push(q); continue }   // not your own answer
+          answered++
+          latencies.push((m.ts - q.ts) / 60000)
+        }
+        open = waiting
       }
-      if (!openQuestion && m._question) { openQuestion = m; threads++ }
+      if (m._question) { open.push(m); questions++ }
     }
   }
   latencies.sort((a, b) => a - b)
   const median = latencies.length ? latencies[Math.floor(latencies.length / 2)] : null
   return {
-    questions: threads,
+    questions,
     answered,
-    answerRate: threads ? answered / threads : 0,
+    answerRate: questions ? answered / questions : 0,
     medianMinutes: median === null ? null : +median.toFixed(1),
     p90Minutes: latencies.length ? +latencies[Math.floor(latencies.length * 0.9)].toFixed(1) : null,
   }

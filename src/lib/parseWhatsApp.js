@@ -73,6 +73,10 @@ const EVENTS = [
   // membership — the numbers that drive member growth
   { type: 'join',    re: /\bjoined (?:from the community|using (?:this|a) group(?:'s)? invite link|using a group link)\b/i },
   { type: 'join',    re: /\bwas added\b/i },
+  /* Specific before generic: "Alex added the group description" also satisfies
+     the "X added Y" join rule below, and read as a join it invents a member
+     named "the group description" who then never leaves. */
+  { type: 'admin',   re: /\badded (?:the |a )?(?:new )?group (?:description|subject|icon|photo)\b/i },
   { type: 'join',    re: /^(?:You|.{1,60}?)\s+added\s+\S/i },
   { type: 'leave',   re: /\bleft\b\s*$/i },
   { type: 'leave',   re: /\b(?:removed|was removed)\b/i },
@@ -87,7 +91,6 @@ const EVENTS = [
   { type: 'admin',   re: /\bcreated the username\b/i },
   { type: 'admin',   re: /\bjoined this group from the community\b/i, },
   { type: 'admin',   re: /\bpinned a message\b/i },
-  { type: 'admin',   re: /\badded (?:the )?group description\b/i },
   { type: 'deleted', re: /\b(?:This message was deleted|You deleted this message|deleted this message as admin|message was deleted by admin)\b/i },
   { type: 'system',  re: /\bMessages and calls are end-to-end encrypted\b/i },
   { type: 'system',  re: /\bmessages and calls are end-to-end encrypted\b/i },

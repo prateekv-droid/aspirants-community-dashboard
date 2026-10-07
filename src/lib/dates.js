@@ -22,6 +22,18 @@ export function eachDay(from, to) {
 
 export const today = () => iso(new Date())
 
+/* How far the calendar opens. These are deliberately *not* the extent of the
+   imported data: an operator picks a window first and imports the export that
+   covers it, so a picker that only offered the dates already loaded could
+   never be used to widen the view. The data's own extent is still shown under
+   the custom range as a hint. */
+export const CALENDAR_MIN = '2020-01-01'
+export const CALENDAR_MAX = '2030-12-31'
+
+/** Hold an ISO date inside the calendar bounds. */
+export const clampToCalendar = (s) =>
+  !s ? s : s < CALENDAR_MIN ? CALENDAR_MIN : s > CALENDAR_MAX ? CALENDAR_MAX : s
+
 /** GSC-style presets, all inclusive of both ends. */
 export const PRESETS = [
   { key: '7d',   label: 'Last 7 days',    days: 7 },

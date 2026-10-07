@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   loadState, saveState, clearState, emptyState, resolveCommunity,
   createCommunity, renameCommunity, deleteCommunity,
-  mergeWhatsApp, addSnapshot, mergeGA, mergeShortIo, communityExtent,
+  mergeWhatsApp, addSnapshot, mergeGA, mergeShortIo, communityExtent, setManualMembers,
   aggregateCommunities, planMigration, PARSER_VERSION,
 } from './lib/store.js'
 import { enrichEvents, eventsFor } from './lib/metrics.js'
@@ -207,6 +207,17 @@ export default function App() {
     return r
   }
 
+  /* ── manual member counts ───────────────────────────────────────────
+     Only the community and group records are copied — the event arrays they
+     carry stay shared, so typing a number costs nothing. */
+  const onSetMembers = (target, value) => {
+    setState((prev) => {
+      const next = { ...prev, communities: prev.communities.map((c) => ({ ...c, groups: c.groups.map((g) => ({ ...g })) })) }
+      setManualMembers(next, target, value)
+      return next
+    })
+  }
+
   /* ── render ─────────────────────────────────────────────────────────── */
   if (booting || !state) {
     return (
@@ -223,7 +234,7 @@ export default function App() {
   }
 
   const prev = previousRange(range.range)
-  const shared = { data, range: range.range, prevRange: prev, compare: range.compare, toast, state }
+  const shared = { data, range: range.range, prevRange: prev, compare: range.compare, toast, state, groupFilter, onSetMembers }
   const many = state.communities.length > 1
 
   return (
@@ -307,7 +318,7 @@ export default function App() {
             {section === 'overview' && <Overview {...shared} onNavigate={setSection} onAddData={() => setUploadTab('upload')} onScope={setScope} />}
             {section === 'members' && <MemberGrowth {...shared} />}
             {section === 'conversations' && <Conversations {...shared} />}
-            {section === 'groups' && <Groups {...shared} groupFilter={groupFilter} onGroupFilter={setGroupFilter} />}
+            {section === 'groups' && <Groups {...shared} onGroupFilter={setGroupFilter} />}
           </ErrorBoundary>
         </div>
       )}

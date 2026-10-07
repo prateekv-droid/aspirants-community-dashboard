@@ -1,15 +1,16 @@
 import { useMemo } from 'react'
-import { memberSeries, conversationSeries, topicsFor, groupActivity } from '../lib/metrics.js'
+import { memberSeries, conversationSeries, topicsFor, groupActivity, manualCount } from '../lib/metrics.js'
 import { shortLabel } from '../lib/parseWhatsApp.js'
 import { fmtFull, fmtNum, sentimentColor } from '../lib/format.js'
 import CountryGroupsTable from '../components/CountryGroupsTable.jsx'
+import ManualMembers from '../components/ManualMembers.jsx'
 import { fmtLong } from '../lib/dates.js'
 import TrendChart from '../components/TrendChart.jsx'
 import { Card, Sparkline } from '../components/ui.jsx'
 
 /* Per-country comparison. The point of this page is ranking: which country
    group deserves the next campaign, and which is quietly bleeding members. */
-export default function Groups({ data, range, prevRange, compare, groupFilter, onGroupFilter }) {
+export default function Groups({ data, range, prevRange, compare, groupFilter, onGroupFilter, onSetMembers }) {
   const rows = useMemo(() => groupActivity(data.community, range), [data.community, range])
 
   const perGroup = useMemo(() => data.community.groups.map((g) => {
@@ -17,6 +18,7 @@ export default function Groups({ data, range, prevRange, compare, groupFilter, o
     const c = conversationSeries(g.events, range)
     const t = topicsFor(g.events, range)
     return { group: g.rawGroup || g.group, country: g.country, community: g.communityName || null, m, c,
+             members: manualCount(g) ?? m.totals.members,
              topTopics: t.topics.slice(0, 3), media: g.media, first: g.first, last: g.last }
   }), [data.community, range])
 
@@ -35,7 +37,7 @@ export default function Groups({ data, range, prevRange, compare, groupFilter, o
           <span className="eyebrow">Community</span>
           <h1>Groups</h1>
           <p className="sub">
-            {data.community.groups.length} country groups
+            {data.community.groups.length} country group{data.community.groups.length === 1 ? '' : 's'}
             {data.isAggregate && (data.community.memberCommunities?.length ?? 1) > 1 &&
               <> across {data.community.memberCommunities.length} communities</>},
             {' '}{fmtFull(totalMembers)} members between them. Click a row to filter every section to that group.
@@ -58,13 +60,15 @@ export default function Groups({ data, range, prevRange, compare, groupFilter, o
         filtered={groupFilter}
         onRowClick={(r) => onGroupFilter(groupFilter.length === 1 && groupFilter[0] === r.key ? [] : [r.key])} />
 
+      <GroupMemberCounts data={data} range={range} onSetMembers={onSetMembers} />
+
       <div className="grid-2">
         {perGroup.map((g) => (
           <Card key={`${g.community || ''}${g.group}`} title={g.group}
                 badge={g.community ? { text: g.community, tone: 'quiet' } : undefined}
                 sub={`${fmtLong(g.first)} → ${fmtLong(g.last)} · ${fmtFull(g.media)} media files in the export`}>
             <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginBottom: 12 }}>
-              <Mini k="Members" v={fmtFull(g.m.totals.members)} />
+              <Mini k="Members" v={fmtFull(g.members)} />
               <Mini k="Joined" v={`+${fmtFull(g.m.totals.joined)}`} tone="var(--pos)" />
               <Mini k="Left" v={`−${fmtFull(g.m.totals.left)}`} tone="var(--neg)" />
               <Mini k="Messages" v={fmtFull(g.c.totals.messages)} />
@@ -85,6 +89,32 @@ export default function Groups({ data, range, prevRange, compare, groupFilter, o
         ))}
       </div>
     </>
+  )
+}
+
+/* ── the member count for each group, typed in by hand ──────────────────── */
+function GroupMemberCounts({ data, range, onSetMembers }) {
+  // in the all-communities fold a group carries the community it came from;
+  // scoped to one community it is simply that community's own group
+  const fallbackId = data.community.memberCommunities?.length === 1
+    ? data.community.memberCommunities[0].id
+    : data.community.id
+
+  const items = useMemo(() => data.community.groups.map((g) => ({
+    id: g.group,
+    target: { communityId: g.communityId || fallbackId, group: g.rawGroup || g.group },
+    label: shortLabel(g.rawGroup || g.group),
+    note: g.communityName || null,
+    calculated: memberSeries(g.events, range).totals.members,
+    value: manualCount(g),
+  })), [data.community, range, fallbackId])
+
+  return (
+    <ManualMembers
+      title="Members by group"
+      sub="Type the real member count for a country group and it replaces the figure rebuilt from that group's join and exit notices. Leave a field empty to go back to the calculated number."
+      items={items}
+      onChange={(it, value) => onSetMembers(it.target, value)} />
   )
 }
 

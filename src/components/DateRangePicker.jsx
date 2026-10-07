@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { PRESETS, resolveRange, previousRange, fmtLong, daysBetween } from '../lib/dates.js'
+import { PRESETS, resolveRange, previousRange, fmtLong, daysBetween, clampToCalendar, CALENDAR_MIN, CALENDAR_MAX } from '../lib/dates.js'
 
 /* Search-Console-shaped range control: presets, a custom range, and a
    compare-to-previous-period switch that every chart honours. */
@@ -31,8 +31,10 @@ export default function DateRangePicker({ value, onChange, extent }) {
 
   const applyCustom = () => {
     if (!draft.from || !draft.to) return
-    const from = draft.from <= draft.to ? draft.from : draft.to
-    const to = draft.from <= draft.to ? draft.to : draft.from
+    // a date can be typed straight into the field, past what the calendar offers
+    const a = clampToCalendar(draft.from), b = clampToCalendar(draft.to)
+    const from = a <= b ? a : b
+    const to = a <= b ? b : a
     onChange({ ...value, preset: 'custom', range: { from, to } })
     setOpen(false)
   }
@@ -77,12 +79,12 @@ export default function DateRangePicker({ value, onChange, extent }) {
             <div style={{ display: 'flex', gap: 8 }}>
               <label className="field" style={{ flex: 1 }}>
                 <span>From</span>
-                <input type="date" value={draft.from} min={extent?.from} max={extent?.to}
+                <input type="date" value={draft.from} min={CALENDAR_MIN} max={CALENDAR_MAX}
                        onChange={(e) => setDraft((d) => ({ ...d, from: e.target.value }))} />
               </label>
               <label className="field" style={{ flex: 1 }}>
                 <span>To</span>
-                <input type="date" value={draft.to} min={extent?.from} max={extent?.to}
+                <input type="date" value={draft.to} min={CALENDAR_MIN} max={CALENDAR_MAX}
                        onChange={(e) => setDraft((d) => ({ ...d, to: e.target.value }))} />
               </label>
             </div>

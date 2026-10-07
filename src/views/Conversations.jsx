@@ -116,6 +116,10 @@ export default function Conversations({ data, range, prevRange, compare }) {
           <Row k="Got a reply" v={`${fmtNum(resp.answerRate, 'pct')} (${fmtFull(resp.answered)})`} />
           <Row k="Median reply time" v={fmtNum(resp.medianMinutes, 'min')} />
           <Row k="Slowest 10%" v={fmtNum(resp.p90Minutes, 'min')} />
+          <p className="muted" style={{ marginTop: 10 }}>
+            An export carries no reply threading, so a question counts as answered when anyone else posts in that
+            group within 45 minutes of it. In a busy group that is a generous read.
+          </p>
         </Card>
 
         <Card title="Volume">

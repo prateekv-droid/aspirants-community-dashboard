@@ -9,6 +9,7 @@ import path from 'node:path'
 import { detectAndParse } from '../src/lib/detect.js'
 import { parseWhatsAppChat, extractLinks, shortLabel, countryFromLabel } from '../src/lib/parseWhatsApp.js'
 import { parseCSV } from '../src/lib/csv.js'
+import { parseShortIo } from '../src/lib/parseShortIo.js'
 import { inferMapping, buildLeads, toISODate } from '../src/lib/parseLeads.js'
 import { emptyState, ensureCommunity, mergeWhatsApp, addSnapshot, mergeGA, mergeShortIo, planMigration, PARSER_VERSION,
   createCommunity, renameCommunity, deleteCommunity, resolveCommunity, communityContents } from '../src/lib/store.js'
@@ -51,6 +52,41 @@ const si = await detectAndParse(read('Short io click data.xlsx'))
 ok('short.io workbook detected', si.source === 'shortio')
 ok('no unrecognised short.io tabs', si.payload.unknown.length === 0, `${Object.keys(si.payload.dims).length} dimensions`)
 ok('short.io totals read', si.payload.totals.clicks === 2258, `${si.payload.totals.clicks} clicks / ${si.payload.totals.links} links`)
+ok('short.io export window read from its label', si.payload.range.from === '2026-07-25' && si.payload.range.to === '2026-08-25',
+   `${si.payload.range.from} → ${si.payload.range.to}`)
+
+/* ── short.io date-range label ────────────────────────────────────────────
+   The label is free text and the separator is sometimes a plain "-", which is
+   also the separator inside an ISO date. Reading it wrong does not fail
+   loudly — it yields a window running backwards, which then silently corrupts
+   snapshot de-duplication and every period comparison. */
+section('short.io date-range label')
+const label = (text, daily = []) => parseShortIo([
+  { name: 'General statistic', rows: [['k', 'v'], ['Date range', text], ['Total clicks', 1]] },
+  ...(daily.length ? [{ name: 'Click statistics', rows: [['Date', 'Clicks'], ...daily] }] : []),
+]).range
+const isRange = (r, from, to) => r.from === from && r.to === to
+
+for (const [text, why] of [
+  ['25 July 2026 — 25 August 2026', 'em dash, as short.io writes it today'],
+  ['25 July 2026 – 25 August 2026', 'en dash'],
+  ['25 July 2026-25 August 2026', 'bare hyphen, written months'],
+  ['25 Jul 2026 - 25 Aug 2026', 'abbreviated months'],
+  ['July 25, 2026 to August 25, 2026', 'month-first with "to"'],
+  ['2026-07-25 - 2026-08-25', 'ISO either side of a hyphen'],
+  ['2026-07-25 — 2026-08-25', 'ISO, em dash'],
+  ['2026-07-25 to 2026-08-25', 'ISO with "to"'],
+]) {
+  ok(`reads ${JSON.stringify(text)}`, isRange(label(text), '2026-07-25', '2026-08-25'), why)
+}
+ok('a backwards label is put the right way round',
+   isRange(label('25 August 2026 — 25 July 2026'), '2026-07-25', '2026-08-25'))
+ok('an impossible date is rejected, not rolled over',
+   label('2026-13-45 - 2026-08-25').from === null)
+ok('an unreadable label falls back to the daily series',
+   isRange(label('last 30 days', [['2026-07-25', 5], ['2026-08-25', 9]]), '2026-07-25', '2026-08-25'))
+ok('an unreadable label with no daily data reports no range',
+   label('last 30 days').from === null)
 
 /* ── attribution honesty ──────────────────────────────────────────────── */
 section('Attribution')
@@ -162,6 +198,42 @@ section('Community management')
 }
 
 /* ── leads mapping ────────────────────────────────────────────────────── */
+/* ── responsiveness ───────────────────────────────────────────────────────
+   The rate is printed beside the question count on two pages, so the two must
+   be counted the same way. An earlier version kept one open question per
+   group, which swallowed a burst from a single asker: three questions and one
+   reply read as "1 question, 100% answered". */
+section('Responsiveness')
+{
+  const R = { from: '2026-01-01', to: '2026-01-01' }
+  const at = (min, author, text, group = 'G') =>
+    ({ ts: Date.UTC(2026, 0, 1, 10, min), date: '2026-01-01', type: 'message', author, group, text, dow: 4, hour: 10 })
+  const run = (evts) => { enrichEvents(evts); return { conv: conversationSeries(evts, R).totals.questions, r: responsiveness(evts, R) } }
+
+  const burst = run([
+    at(0, 'A', 'Where do I find housing?'), at(1, 'A', 'Anyone know the deadline?'),
+    at(2, 'A', 'Is the fee refundable?'), at(5, 'B', 'Yes it is'),
+  ])
+  ok('a burst of questions is counted in full', burst.r.questions === 3, `${burst.r.questions} of 3`)
+  ok('question count matches the one shown beside the rate', burst.r.questions === burst.conv)
+
+  const unanswered = run([at(0, 'A', 'Where is housing?'), at(1, 'A', 'What deadline?'), at(2, 'A', 'Refundable?')])
+  ok('questions nobody follows count against the rate', unanswered.r.answerRate === 0 && unanswered.r.questions === 3)
+
+  const own = run([at(0, 'A', 'Any news on CAS?'), at(3, 'A', 'anyone?'), at(10, 'B', 'mine came yesterday')])
+  ok('the asker cannot answer themselves', own.r.answered === 2 && own.r.questions === 2,
+     `${own.r.answered} answered by B, not by A's own follow-up`)
+
+  const late = run([at(0, 'A', 'Any news on CAS?'), at(60, 'B', 'mine came yesterday')])
+  ok('a reply past the idle window does not count', late.r.answered === 0 && late.r.questions === 1)
+
+  const crossGroup = run([at(0, 'A', 'Housing help?', 'UK'), at(2, 'B', 'unrelated chatter', 'India')])
+  ok('another group\'s chatter never answers a question', crossGroup.r.answered === 0)
+
+  const none = run([at(0, 'A', 'good morning'), at(1, 'B', 'morning')])
+  ok('no questions yields a zero rate, not a divide by zero', none.r.questions === 0 && none.r.answerRate === 0)
+}
+
 section('Leads sheet mapping')
 const leadCsv = path.join(import.meta.dirname, '..', 'public', 'leads-sample.csv')
 if (fs.existsSync(leadCsv)) {
@@ -278,6 +350,9 @@ if (HAVE_WA) {
   ok('daily series length matches the window', cWin.series.length === 28)
   const resp = responsiveness(events, full)
   ok('answer rate is a proportion', resp.answerRate > 0 && resp.answerRate <= 1, `${(resp.answerRate * 100) | 0}% answered`)
+  ok('answered never exceeds questions asked', resp.answered <= resp.questions, `${resp.answered} of ${resp.questions}`)
+  ok('responsiveness counts the same questions the chart does',
+     resp.questions === conversationSeries(events, full).totals.questions, `${resp.questions} questions`)
   const top = contributors(events, full)
   ok('contributors ranked by volume', top.length > 100 && top[0].messages >= top[1].messages, `${top.length} contributors`)
 

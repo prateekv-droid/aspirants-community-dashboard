@@ -183,6 +183,24 @@ export function resolveCommunity(state, { communityId, name }) {
   return ensureCommunity(state, name || state.communities[0]?.name || 'Community #1')
 }
 
+/* ── manual member counts ────────────────────────────────────────────────
+   Membership is reconstructed from the join and exit notices still present in
+   a transcript, so a group exported after its history was trimmed counts low.
+   An operator can therefore type the real figure — one per community and one
+   per group — and that number is reported instead of the reconstructed one.
+   Clearing the field (null) goes back to the calculated count.           */
+
+export function setManualMembers(state, { communityId, group }, value) {
+  const c = state.communities.find((x) => x.id === communityId)
+  if (!c) return { error: 'That community no longer exists.' }
+  const target = group ? (c.groups || []).find((g) => g.group === group) : c
+  if (!target) return { error: 'That group no longer exists.' }
+  const n = value === null || value === '' ? NaN : Math.round(Number(value))
+  if (!Number.isFinite(n) || n < 0) delete target.manualMembers
+  else target.manualMembers = n
+  return { ok: true }
+}
+
 /* ── merging repeat imports ────────────────────────────────────────────── */
 
 const evKey = (e) =>

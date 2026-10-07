@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import {
   memberSeries, topicsFor, responsiveness, attribution, byCommunity,
   joinSources, leaveReasons, dailyByCommunity, acquisitionSources, groupActivity, delta,
+  scopeMembers, manualCount,
 } from '../lib/metrics.js'
 import { fmtFull, fmtNum, sentimentLabel, sentimentColor } from '../lib/format.js'
 import { fmtLong } from '../lib/dates.js'
@@ -11,13 +12,15 @@ import DataTable from '../components/DataTable.jsx'
 import { Card, Delta, Sparkline } from '../components/ui.jsx'
 import SourceSplit from '../components/SourceSplit.jsx'
 import AcquisitionTiles from '../components/AcquisitionTiles.jsx'
+import ManualMembers from '../components/ManualMembers.jsx'
 
 /* The Overview answers different questions depending on where you are.
    Across communities it is a roll-up: how many members, where they came from,
    which community is alive. Inside a community it is the group breakdown:
    which country groups carry the activity and what they are talking about. */
-export default function Overview({ data, state, range, prevRange, compare, onNavigate, onAddData, onScope }) {
+export default function Overview({ data, state, range, prevRange, compare, groupFilter, onSetMembers, onNavigate, onAddData, onScope }) {
   const rollup = data.isAggregate && (data.community.memberCommunities?.length ?? 1) > 1
+  const shownGroups = groupFilter.length || data.community.groups.length
 
   const m = useMemo(() => ({
     cur: memberSeries(data.events, range),
@@ -35,8 +38,18 @@ export default function Overview({ data, state, range, prevRange, compare, onNav
     [data.ga, data.shortio, range, prevRange]
   )
 
+  /* the manual counts replace the reconstructed total wherever one is typed */
+  const members = useMemo(
+    () => scopeMembers(data.community, range, groupFilter),
+    [data.community, range, groupFilter]
+  )
+  const prevMembers = useMemo(
+    () => scopeMembers(data.community, prevRange, groupFilter),
+    [data.community, prevRange, groupFilter]
+  )
+
   const headline = [
-    { label: 'Total members', value: m.cur.totals.members, prev: m.prev.totals.members, hint: 'Membership at the end of the range' },
+    { label: 'Total members', value: members, prev: prevMembers, hint: 'Membership at the end of the range' },
     { label: 'New joins', value: m.cur.totals.joined, prev: m.prev.totals.joined },
     { label: 'Members left', value: m.cur.totals.left, prev: m.prev.totals.left, invert: true },
     { label: 'Net change', value: m.cur.totals.net, prev: m.prev.totals.net, signed: true },
@@ -50,7 +63,8 @@ export default function Overview({ data, state, range, prevRange, compare, onNav
           <h1>{data.community.name}</h1>
           <p className="sub">
             {rollup && <>{data.community.memberCommunities.length} communities · </>}
-            {data.community.groups.length} country groups · {fmtLong(range.from)} – {fmtLong(range.to)}
+            {shownGroups} country group{shownGroups === 1 ? '' : 's'}
+            {groupFilter.length > 0 && <> of {data.community.groups.length}</>} · {fmtLong(range.from)} – {fmtLong(range.to)}
             {compare && <> · compared with {fmtLong(prevRange.from)} – {fmtLong(prevRange.to)}</>}
           </p>
         </div>
@@ -76,17 +90,19 @@ export default function Overview({ data, state, range, prevRange, compare, onNav
         ))}
       </div>
 
-      <MemberSplit m={m} compare={compare}
+      <CommunityMemberCounts data={data} range={range} onSetMembers={onSetMembers} />
+
+      <MemberSplit m={m} members={members} compare={compare}
                    split={<SourceSplit sources={sources} prevSources={prevSources}
                                        exits={exits} prevExits={prevExits} compare={compare} />} />
 
       <AcquisitionTiles tiles={acquisition} />
 
-      <ConversationsByGroup data={data} range={range} onNavigate={onNavigate} />
+      <ConversationsByGroup data={data} range={range} groups={groupFilter} onNavigate={onNavigate} />
       {/* only the Overview tab spans communities; inside one it would be a single line */}
-      {data.isAggregate && <ConversationsByCommunity data={data} range={range} onNavigate={onNavigate} />}
-      {rollup && <MembersByCommunity data={data} range={range} onScope={onScope} />}
-      <GroupThemes data={data} range={range} />
+      {data.isAggregate && <ConversationsByCommunity data={data} range={range} groups={groupFilter} onNavigate={onNavigate} />}
+      {rollup && <MembersByCommunity data={data} range={range} groups={groupFilter} onScope={onScope} />}
+      <GroupThemes data={data} range={range} groups={groupFilter} />
 
       <Card title="What drove traffic to amber"
             sub={data.ga || data.shortio
@@ -113,8 +129,29 @@ export default function Overview({ data, state, range, prevRange, compare, onNav
   )
 }
 
+/* ── the total members for each community, typed in by hand ─────────────── */
+function CommunityMemberCounts({ data, range, onSetMembers }) {
+  const list = data.community.memberCommunities || [data.community]
+  const items = useMemo(() => list.map((c) => ({
+    id: c.id,
+    target: { communityId: c.id },
+    label: c.name,
+    note: `${c.groups.length} country groups`,
+    calculated: memberSeries(c.groups.flatMap((g) => g.events), range).totals.members,
+    value: manualCount(c),
+  })), [list, range])
+
+  return (
+    <ManualMembers
+      title="Total members by community"
+      sub="Type the real total for a community and it replaces the figure rebuilt from join and exit notices, everywhere members are reported. Leave a field empty to go back to the calculated number."
+      items={items}
+      onChange={(it, value) => onSetMembers(it.target, value)} />
+  )
+}
+
 /* ── member split: the trend, beside where joins came from and exits went ── */
-function MemberSplit({ m, compare, split }) {
+function MemberSplit({ m, members, compare, split }) {
   const series = [
     { key: 'members', label: 'Total members', color: 'var(--s1)',
       values: m.cur.series.map((d) => ({ date: d.date, value: d.members })),
@@ -130,7 +167,7 @@ function MemberSplit({ m, compare, split }) {
   return (
     <div className="split">
       <Card title="Members"
-            sub={`${fmtFull(m.cur.baseline)} at the start, ${m.cur.totals.net >= 0 ? '+' : '−'}${fmtFull(Math.abs(m.cur.totals.net))} over the range, ${fmtFull(m.cur.totals.members)} now`}
+            sub={`${fmtFull(m.cur.baseline)} at the start, ${m.cur.totals.net >= 0 ? '+' : '−'}${fmtFull(Math.abs(m.cur.totals.net))} over the range, ${fmtFull(members)} now`}
             pad={false}>
         <div style={{ padding: '10px 8px 4px' }}>
           <TrendChart series={series} height={236} showArea={false} />
@@ -147,8 +184,8 @@ function MemberSplit({ m, compare, split }) {
 }
 
 /* ── daily conversations, one line per country group ─────────────────────── */
-function ConversationsByGroup({ data, range, onNavigate }) {
-  const rows = useMemo(() => groupActivity(data.community, range), [data.community, range])
+function ConversationsByGroup({ data, range, groups, onNavigate }) {
+  const rows = useMemo(() => groupActivity(data.community, { ...range, groups }), [data.community, range, groups])
   const busiest = rows[0]
   const quietest = rows[rows.length - 1]
   const series = rows.map((g, i) => ({
@@ -176,8 +213,8 @@ function ConversationsByGroup({ data, range, onNavigate }) {
 }
 
 /* ── daily conversations, one line per community ─────────────────────────── */
-function ConversationsByCommunity({ data, range, onNavigate }) {
-  const daily = useMemo(() => dailyByCommunity(data.community.memberCommunities, range), [data.community, range])
+function ConversationsByCommunity({ data, range, groups, onNavigate }) {
+  const daily = useMemo(() => dailyByCommunity(data.community, { ...range, groups }), [data.community, range, groups])
   const series = daily.map((d, i) => ({
     key: d.id, label: d.label, color: `var(--s${(i % 10) + 1})`,
     values: d.series.map((x) => ({ date: x.date, value: x.messages })),
@@ -218,8 +255,8 @@ function ConversationsByCommunity({ data, range, onNavigate }) {
 }
 
 /* ── members per community — only when there is more than one ───────────── */
-function MembersByCommunity({ data, range, onScope }) {
-  const rows = useMemo(() => byCommunity(data.community.memberCommunities, range), [data.community, range])
+function MembersByCommunity({ data, range, groups, onScope }) {
+  const rows = useMemo(() => byCommunity(data.community, { ...range, groups }), [data.community, range, groups])
   return (
     <Card title="Members by community" sub="Click a row to open that community's own tab." pad={false}>
       <DataTable
@@ -228,7 +265,7 @@ function MembersByCommunity({ data, range, onScope }) {
         rowKey={(r) => r.id}
         onRowClick={(r) => onScope?.(r.id)}
         columns={[
-          { key: 'label', label: 'Community', sub: (r) => `${r.groups} country groups` },
+          { key: 'label', label: 'Community', sub: (r) => `${r.groups} country group${r.groups === 1 ? '' : 's'}` },
           { key: 'members', label: 'Members', bar: true, color: 'var(--s1)' },
           { key: 'joined', label: 'New joins', bar: true, color: 'var(--s4)' },
           { key: 'left', label: 'Left', bar: true, color: 'var(--s2)' },
@@ -247,10 +284,10 @@ function MembersByCommunity({ data, range, onScope }) {
 }
 
 /* ── a card per country group: movement, responsiveness, and its themes ─── */
-function GroupThemes({ data, range }) {
+function GroupThemes({ data, range, groups }) {
   const cards = useMemo(() => {
     const byKey = new Map(data.community.groups.map((g) => [g.group, g]))
-    return groupActivity(data.community, range).map((row) => {
+    return groupActivity(data.community, { ...range, groups }).map((row) => {
       const g = byKey.get(row.key)
       return {
         ...row,
@@ -258,7 +295,7 @@ function GroupThemes({ data, range }) {
         resp: responsiveness(g.events, range),
       }
     })
-  }, [data.community, range])
+  }, [data.community, range, groups])
 
   return (
     <div className="grid-2">

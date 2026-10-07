@@ -29,15 +29,51 @@ const SHEET_KEYS = {
   'language': 'languages',
 }
 
-/** "25 July 2026 — 25 August 2026" → { from, to } ISO. */
+const NO_RANGE = { from: null, to: null }
+
+/** y-m-d as ISO, but only if it is a real calendar date. */
+function isoDate(y, m, d) {
+  const back = new Date(Date.UTC(+y, +m - 1, +d))
+  return back.getUTCFullYear() === +y && back.getUTCMonth() === +m - 1 && back.getUTCDate() === +d
+    ? `${y}-${m}-${d}`
+    : null
+}
+
+/** One written date ("25 July 2026", "Jul 25, 2026") as ISO, read as UTC. */
+function writtenDate(t) {
+  const str = String(t || '').trim().replace(/^[,;]+|[,;]+$/g, '')
+  if (!str) return null
+  const d = new Date(`${str} UTC`)
+  return isNaN(d) ? null : d.toISOString().slice(0, 10)
+}
+
+/**
+ * "25 July 2026 — 25 August 2026" → { from, to } ISO.
+ *
+ * ISO dates are matched whole *before* anything is split, because a plain "-"
+ * is both short.io's range separator and the separator inside an ISO date:
+ * splitting first turns "2026-07-25 - 2026-08-25" into six fragments and
+ * yields a range running backwards, which then silently corrupts snapshot
+ * de-duplication and every window comparison. A label we cannot read returns
+ * nulls so the caller falls back to the daily series' own first and last day,
+ * which is the more trustworthy source anyway.
+ */
 function parseRangeLabel(s) {
-  const parts = String(s || '').split(/[—–\-]{1,2}|\bto\b/).map((x) => x.trim()).filter(Boolean)
-  const one = (t) => {
-    const d = new Date(t + ' UTC')
-    return isNaN(d) ? null : d.toISOString().slice(0, 10)
+  const raw = String(s || '').trim()
+  if (!raw) return NO_RANGE
+
+  const order = (a, b) => (!a || !b ? NO_RANGE : a <= b ? { from: a, to: b } : { from: b, to: a })
+
+  const iso = raw.match(/\d{4}-\d{2}-\d{2}/g)
+  if (iso && iso.length >= 2) {
+    const one = (t) => isoDate(...t.split('-'))
+    return order(one(iso[0]), one(iso[iso.length - 1]))
   }
-  if (parts.length >= 2) return { from: one(parts[0]), to: one(parts[1]) }
-  return { from: null, to: null }
+
+  // no ISO dates left to damage, so a bare hyphen is safe to split on
+  const parts = raw.split(/\s*(?:[—–]|\bto\b|-)\s*/i).map((x) => x.trim()).filter(Boolean)
+  if (parts.length < 2) return NO_RANGE
+  return order(writtenDate(parts[0]), writtenDate(parts[parts.length - 1]))
 }
 
 export function parseShortIo(sheets) {
